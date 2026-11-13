@@ -76,9 +76,10 @@ class PlasmaFusionStability(gym.Env):
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)  # seeds self.np_random, so use it instead of np.random
 
-        z0 = self.np_random.uniform(0, 0.05)
+        z0 = self.np_random.uniform(-0.05, 0.05)
         # randomizing matters: with a fixed z0 the agent memorizes one trajectory.
-        self.plasma_pos = np.zeroes(3)
+        self.plasma_pos = np.zeros(3)
+        self.plasma_pos[2] = z0
         self.plasma_vel = np.zeros(3)
         self.step_count = 0
         return self._get_obs(), self._get_info()
@@ -94,8 +95,8 @@ class PlasmaFusionStability(gym.Env):
                                                       self.m_plasma, self.mass, self.dt)
         self.step_count += 1
 
-        self.reward += -1*self.effort_coeff * np.sum(np.abs(delta_I))
-        self.reward += -1*self.plasma_pos[2]/(self.z_fail**2)
+        reward = -1*self.effort_coeff * np.sum(np.abs(delta_I))
+        reward += -1*(self.plasma_pos[2]/self.z_fail**2)
 
         # PPO bootstraps value on truncated but not on terminated
         terminated = bool(np.abs(self.plasma_pos[2]) > self.z_fail)
