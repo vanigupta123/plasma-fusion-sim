@@ -16,7 +16,7 @@ class PlasmaFusionStability(gym.Env):
 
     metadata = {"render_modes": []}
 
-    def __init__(self, max_steps: int = 1000, z_fail: float = 0.1):
+    def __init__(self, max_steps: int = 1000, z_fail: float = 0.1, effort_coeff: float = 0.01):
         super().__init__()
 
         # ---- physics constants ----
@@ -33,6 +33,7 @@ class PlasmaFusionStability(gym.Env):
         # ---- episode settings ----
         self.max_steps = max_steps
         self.z_fail = z_fail  # |z| beyond this means the plasma hit the wall, so terminate
+        self.effort_coeff = effort_coeff
 
         # Holding the plasma still at height z takes a top/bottom current split of about
         # u = (dFz/dz / B) * z, which is ~3.4 * z here. At z_fail = 0.1 that's ~0.34 A,
@@ -54,8 +55,8 @@ class PlasmaFusionStability(gym.Env):
         self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(4,), dtype=np.float32)
 
         # ---- state (filled in by reset) ----
-        self.pos = np.zeros(3)   # [x, y, z], 3D to match physics.py
-        self.vel = np.zeros(3)
+        self.plasma_pos = np.zeros(3)   # [x, y, z], 3D to match physics.py
+        self.plasma_vel = np.zeros(3)
         self.step_count = 0
 
     def _get_obs(self):
@@ -77,15 +78,15 @@ class PlasmaFusionStability(gym.Env):
 
         z0 = self.np_random.uniform(0, 0.05)
         # randomizing matters: with a fixed z0 the agent memorizes one trajectory.
-        
-        self.vel = np.zeros(3)
+        self.plasma_pos = np.zeroes(3)
+        self.plasma_vel = np.zeros(3)
         self.step_count = 0
         return self._get_obs(), self._get_info()
 
     def step(self, action):
         # action = np.array([bottom, top, bl, br, tl, tr])
         delta_I = np.clip(action, -1, 1) * self.delta_I_max
-        currents = self.nominal_moments + delta_I
+        currents = self.coil_currents + delta_I
         self.coil_moments = coil_moments_from_currents(currents, self.coil_radii)
         # am i doing substeps?
         self.plasma_pos, self.plasma_vel = integrator(self.plasma_pos, self.plasma_vel, 
@@ -93,21 +94,17 @@ class PlasmaFusionStability(gym.Env):
                                                       self.m_plasma, self.mass, self.dt)
         self.step_count += 1
 
-        # TODO 5: REWARD. This is the core design question of the milestone. Some ideas:
-        #   - penalize distance:   -(z / z_fail)**2
-        #   - penalize effort:     - c * sum(action**2)    (otherwise the agent may bang-bang)
-        #   - alive bonus?         +1 per step survived (careful: it interacts with termination)
-        #   - big penalty on failure?
-        #   Ask yourself: under your reward, would the PD controller score well?
-        #   And would "do nothing" score badly?
-        reward = 0.0
+        self.reward += -1*self.effort_coeff * np.sum(np.abs(delta_I))
+        self.reward += -1*self.plasma_pos[2]/(self.z_fail**2)
 
-        # TODO 6: terminated vs truncated. Gymnasium treats these differently:
-        #   terminated = the physics failed (|z| > z_fail), a true end state
-        #   truncated  = hit max_steps (a time limit, not the agent's fault)
-        #   PPO bootstraps value on truncated but not on terminated, so getting this right matters
-        terminated = False
-        truncated = False
+        # PPO bootstraps value on truncated but not on terminated
+        terminated = bool(np.abs(self.plasma_pos[2]) > self.z_fail)
+        truncated = self.step_count >= self.max_steps
+
+        if terminated:
+            reward -= 10.0  # big penalty for hitting the wall or terminating early
+        else:
+            reward += 1.0 # staying alive should have a bigger bonus/reward
 
         return self._get_obs(), reward, terminated, truncated, self._get_info()
 
